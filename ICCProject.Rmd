@@ -1,0 +1,222 @@
+---
+title: ICC Project
+author:
+  - name: Ania Martynuk
+    email: amartyn2@jh.edu
+
+---
+
+```{r}
+library(haven)
+cdystonia <- read_dta("~/Downloads/cdystonia.dta")
+```
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(irr)
+
+cdystonia <- cdystonia %>%
+  mutate(patient_id = interaction(site, id, drop = TRUE))
+```
+
+estimates the proportion of variance attributable to differences between patients after accounting for average differences by week
+```{r}
+# Fit the longitudinal random-intercept model
+cd_model <- lmer(
+  twstrs ~ factor(week) + (1 | patient_id),
+  data = cdystonia,
+  REML = TRUE
+)
+
+# Calculate the ICC
+get_icc <- function(model) {
+  vc <- as.data.frame(VarCorr(model))
+
+  between_var <- vc$vcov[vc$grp == "patient_id"]
+  within_var <- vc$vcov[vc$grp == "Residual"]
+
+  between_var / (between_var + within_var)
+}
+
+icc_longitudinal <- get_icc(cd_model)
+
+# Parametric bootstrap for the 95% CI
+set.seed(123)
+
+boot_results <- bootMer(
+  cd_model,
+  FUN = get_icc,
+  nsim = 1000,
+  type = "parametric",
+  use.u = FALSE
+)
+
+# Extract the percentile confidence interval
+icc_ci <- quantile(
+  boot_results$t[, 1],
+  probs = c(0.025, 0.975),
+  na.rm = TRUE
+)
+
+icc_longitudinal
+icc_ci
+```
+
+
+```{r}
+cd_wide <- cdystonia %>%
+  filter(week %in% c(0, 2)) %>%
+  select(patient_id, week, twstrs) %>%
+  pivot_wider(
+    names_from = week,
+    values_from = twstrs,
+    names_prefix = "week_"
+  ) %>%
+  drop_na(week_0, week_2)
+
+icc_data <- data.frame(
+  week_0 = as.numeric(cd_wide$week_0),
+  week_2 = as.numeric(cd_wide$week_2)
+)
+
+nrow(icc_data)
+```
+
+
+```{r}
+icc_consistency <- irr::icc(
+  icc_data,
+  model = "twoway",
+  type = "consistency",
+  unit = "single"
+)
+
+icc_consistency
+```
+
+
+```{r}
+icc_agreement <- irr::icc(
+  icc_data,
+  model = "twoway",
+  type = "agreement",
+  unit = "single"
+)
+
+icc_agreement
+```
+
+
+```{r}
+# Average-measure consistency ICC
+icc_consistency_avg <- irr::icc(
+  icc_data,
+  model = "twoway",
+  type = "consistency",
+  unit = "average"
+)
+
+icc_consistency_avg
+
+# Average-measure absolute-agreement ICC
+icc_agreement_avg <- irr::icc(
+  icc_data,
+  model = "twoway",
+  type = "agreement",
+  unit = "average"
+)
+
+icc_agreement_avg
+```
+
+```{r}
+cd_all <- cdystonia %>%
+  select(patient_id, week, twstrs) %>%
+  pivot_wider(
+    names_from = week,
+    values_from = twstrs,
+    names_prefix = "week_"
+  ) %>%
+  drop_na()
+
+icc_all_visits <- cd_all %>%
+  select(starts_with("week_")) %>%
+  as.data.frame()
+
+irr::icc(
+  icc_all_visits,
+  model = "twoway",
+  type = "agreement",
+  unit = "average"
+)
+```
+
+```{r}
+cd_all <- cdystonia %>%
+  select(patient_id, week, twstrs) %>%
+  pivot_wider(
+    names_from = week,
+    values_from = twstrs,
+    names_prefix = "week_"
+  ) %>%
+  drop_na()
+
+icc_all_visits <- cd_all %>%
+  select(starts_with("week_")) %>%
+  as.data.frame()
+```
+
+```{r}
+icc_all_results <- irr::icc(
+  icc_all_visits,
+  model = "twoway",
+  type = "agreement",
+  unit = "average",
+  conf.level = 0.95
+)
+```
+
+
+```{r}
+results <- data.frame(
+  ICC_type = c(
+    "Longitudinal variance-components",
+    "Consistency: single",
+    "Absolute agreement: single",
+    "Consistency: average (2 visits)",
+    "Absolute agreement: average (2 visits)",
+    "Absolute agreement: average (6 visits)"
+  ),
+  ICC_value = c(
+    icc_longitudinal,
+    icc_consistency$value,
+    icc_agreement$value,
+    icc_consistency_avg$value,
+    icc_agreement_avg$value,
+    icc_all_results$value
+  ),
+  CI_lower = c(
+  icc_ci[1],
+  icc_consistency$lbound,
+  icc_agreement$lbound,
+  icc_consistency_avg$lbound,
+  icc_agreement_avg$lbound,
+  icc_all_results$lbound
+),
+
+CI_upper = c(
+  icc_ci[2],
+  icc_consistency$ubound,
+  icc_agreement$ubound,
+  icc_consistency_avg$ubound,
+  icc_agreement_avg$ubound,
+  icc_all_results$ubound
+)
+)
+
+print(results, digits = 4)
+```
+
